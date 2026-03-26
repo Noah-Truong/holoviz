@@ -34,7 +34,7 @@ export default function VisualizerApp() {
 
   // Spotify-driven frequency data
   const spotifyFreqRef = useRef<Uint8Array>(new Uint8Array(256));
-  const { state: spotifyState, isSpotifyActiveRef, connect, disconnect } =
+  const { state: spotifyState, isSpotifyActiveRef, connect, disconnect, nextTrack, previousTrack } =
     useSpotify(spotifyFreqRef);
 
   // The single ref passed to the 3D scene — updated each frame from whichever
@@ -150,6 +150,8 @@ export default function VisualizerApp() {
               isActive={isSpotifyPlaying}
               onConnect={connect}
               onDisconnect={disconnect}
+              onNext={nextTrack}
+              onPrevious={previousTrack}
             />
 
             <Divider color={color} />

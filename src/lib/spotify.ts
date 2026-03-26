@@ -1,6 +1,7 @@
 export const SPOTIFY_SCOPES = [
   "user-read-currently-playing",
   "user-read-playback-state",
+  "user-modify-playback-state",
 ].join(" ");
 
 export const SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize";

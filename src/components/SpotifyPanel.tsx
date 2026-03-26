@@ -7,15 +7,22 @@ interface SpotifyPanelProps {
   isActive: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
+  onNext: () => void;
+  onPrevious: () => void;
 }
+
+// Spotify deprecated GET /audio-analysis in late 2024. When it's unavailable
+// we fall back to a synthetic beat-simulated FFT — the sphere still reacts.
 
 export default function SpotifyPanel({
   state,
   isActive,
   onConnect,
   onDisconnect,
+  onNext,
+  onPrevious,
 }: SpotifyPanelProps) {
-  const { isAuthenticated, isConnecting, isPlaying, track } = state;
+  const { isAuthenticated, isConnecting, isPlaying, track, usingAnalysis } = state;
 
   if (isConnecting) {
     return (
@@ -41,16 +48,22 @@ export default function SpotifyPanel({
 
   return (
     <div className="flex flex-col gap-2.5">
-      {/* Header row */}
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
           <SpotifyIcon className="h-3.5 w-3.5" color="#1DB954" />
-          <span className="text-xs font-semibold text-[#1DB954]">
-            Spotify
-          </span>
+          <span className="text-xs font-semibold text-[#1DB954]">Spotify</span>
           {isActive && (
             <span className="rounded-full bg-[#1DB954]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#1DB954] uppercase tracking-wider">
               Live
+            </span>
+          )}
+          {isActive && !usingAnalysis && (
+            <span
+              title="Spotify audio analysis API is unavailable — using beat simulation"
+              className="rounded-full bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 uppercase tracking-wider cursor-help"
+            >
+              Simulated
             </span>
           )}
         </div>
@@ -67,11 +80,8 @@ export default function SpotifyPanel({
         <div
           className="flex items-center gap-3 rounded-xl p-3 border transition-all duration-500"
           style={{
-            background: isActive
-              ? "linear-gradient(135deg, #1DB954/8%, transparent)"
-              : "#f9fafb",
-            borderColor: isActive ? "#1DB95440" : "#e5e7eb",
             backgroundColor: isActive ? "rgba(29,185,84,0.07)" : "#f9fafb",
+            borderColor: isActive ? "#1DB95440" : "#e5e7eb",
           }}
         >
           {track.album.images[0] && (
@@ -85,10 +95,8 @@ export default function SpotifyPanel({
               />
               {isActive && (
                 <div
-                  className="absolute inset-0 rounded-lg"
-                  style={{
-                    boxShadow: "0 0 0 2px #1DB954",
-                  }}
+                  className="absolute inset-0 rounded-lg pointer-events-none"
+                  style={{ boxShadow: "0 0 0 2px #1DB954" }}
                 />
               )}
             </div>
@@ -101,7 +109,6 @@ export default function SpotifyPanel({
               {track.artists.map((a) => a.name).join(", ")}
             </p>
           </div>
-          {/* Animated bars */}
           {isActive && (
             <div className="flex gap-[3px] items-end h-5 shrink-0">
               {[0.6, 1, 0.75].map((h, i) => (
@@ -124,7 +131,70 @@ export default function SpotifyPanel({
           <p className="text-xs text-gray-500">Nothing playing on Spotify</p>
         </div>
       )}
+
+      {/* Track navigation controls */}
+      <div className="flex items-center justify-center gap-3 pt-0.5">
+        <TrackButton onClick={onPrevious} label="Previous track" disabled={!isPlaying}>
+          <PreviousIcon />
+        </TrackButton>
+
+        {/* Playback hint */}
+        <span className="text-[11px] text-gray-400 flex-1 text-center leading-snug">
+          {isPlaying ? "Playing on Spotify" : "Open Spotify to play"}
+        </span>
+
+        <TrackButton onClick={onNext} label="Next track" disabled={!isPlaying}>
+          <NextIcon />
+        </TrackButton>
+      </div>
     </div>
+  );
+}
+
+function TrackButton({
+  onClick,
+  label,
+  disabled,
+  children,
+}: {
+  onClick: () => void;
+  label: string;
+  disabled: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className={`
+        flex h-8 w-8 items-center justify-center rounded-full border transition-all duration-200
+        focus:outline-none
+        ${
+          disabled
+            ? "opacity-35 cursor-not-allowed border-gray-200 text-gray-300"
+            : "cursor-pointer border-[#1DB954]/40 text-[#1DB954] hover:bg-[#1DB954]/10 hover:border-[#1DB954] hover:scale-105 active:scale-95"
+        }
+      `}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PreviousIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+      <path d="M8.445 14.832A1 1 0 0010 14v-2.798l5.445 3.63A1 1 0 0017 14V6a1 1 0 00-1.555-.832L10 8.798V6a1 1 0 00-1.555-.832l-6 4a1 1 0 000 1.664l6 4z" />
+    </svg>
+  );
+}
+
+function NextIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+      <path d="M4.555 5.168A1 1 0 003 6v8a1 1 0 001.555.832L10 11.202V14a1 1 0 001.555.832l6-4a1 1 0 000-1.664l-6-4A1 1 0 0010 6v2.798L4.555 5.168z" />
+    </svg>
   );
 }
 
