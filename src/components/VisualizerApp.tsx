@@ -126,10 +126,11 @@ export default function VisualizerApp() {
         {/* Control panel */}
         <div className="w-full lg:w-[340px] flex flex-col justify-center px-5 pb-8 lg:py-10 lg:pr-8">
           <div
-            className="rounded-3xl border bg-white/80 backdrop-blur-xl p-6 shadow-xl flex flex-col gap-5"
+            className="rounded-3xl border bg-white/80 backdrop-blur-xl p-6 shadow-xl flex flex-col gap-5 overflow-y-auto"
             style={{
               borderColor: `color-mix(in srgb, ${color} 28%, #e5e7eb)`,
               boxShadow: `0 4px 32px color-mix(in srgb, ${color} 14%, transparent), 0 1px 3px rgba(0,0,0,0.06)`,
+              maxHeight: "calc(100dvh - 120px)",
             }}
           >
             {/* Title */}
