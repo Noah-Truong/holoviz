@@ -1,36 +1,69 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# HoloViz — 3D Audio Visualizer
+
+A Next.js web app that renders a real-time holographic 3D sphere animated by Fast Fourier Transform (FFT) analysis of uploaded audio files.
+
+## Features
+
+- **3D Holographic Sphere** — Rendered with React Three Fiber (Three.js), 280 signal nodes emanate from the surface and pulse with the music
+- **Real-time FFT Analysis** — Web Audio API drives every spike on the sphere using frequency bin data
+- **Audio File Upload** — Drag & drop or click to browse MP3, WAV, FLAC, OGG, and more
+- **Color Customization** — 8 holographic color presets + custom color picker
+- **Interactive 3D** — Drag to orbit, scroll to zoom, uses OrbitControls
+- **Mobile Responsive** — Stacks vertically on small screens, side-by-side on desktop
+- **White background with holographic glow** — Radial ambient glow, wireframe sphere, orbital rings, animated scanlines
+
+## Stack
+
+| Tool | Purpose |
+|------|---------|
+| Next.js 16 (App Router) | Framework |
+| React Three Fiber | Three.js declarative renderer |
+| @react-three/drei | Stars, OrbitControls helpers |
+| Web Audio API | FFT frequency analysis |
+| Tailwind CSS | Styling |
+| TypeScript | Type safety |
 
 ## Getting Started
 
-First, run the development server:
+### 1. Spotify Setup (required for Spotify integration)
+
+1. Go to [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) and create an app
+2. In your app settings, add these **Redirect URIs**:
+   - `http://localhost:3000/api/auth/callback` (dev)
+   - `https://your-app.vercel.app/api/auth/callback` (prod)
+3. Copy `.env.local.example` → `.env.local` and fill in your credentials:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.local.example .env.local
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 2. Run locally
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Open [http://localhost:3000](http://localhost:3000).
 
-## Learn More
+## Deploy to Vercel
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npx vercel
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Set these environment variables in the Vercel dashboard:
+- `SPOTIFY_CLIENT_ID`
+- `SPOTIFY_CLIENT_SECRET`
+- `NEXT_PUBLIC_APP_URL` → `https://your-app.vercel.app`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The `vercel.json` is pre-configured with security headers.
 
-## Deploy on Vercel
+## How it Works
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. User uploads an audio file → decoded via `AudioContext.decodeAudioData()`
+2. An `AnalyserNode` with `fftSize: 512` produces 256 frequency bins per frame
+3. Each of the 280 sphere nodes maps to a frequency bin; its spike length scales with amplitude
+4. React Three Fiber's `useFrame` loop updates the `InstancedMesh` matrix every frame (~60fps)
+5. The sphere also breathes (subtle scale pulse) and rotates slowly, with orbital rings and a soft glow sphere layered on top
+# holoviz
