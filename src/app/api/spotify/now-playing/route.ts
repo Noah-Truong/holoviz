@@ -65,6 +65,7 @@ export async function GET(req: NextRequest) {
   const res = NextResponse.json({
     is_playing: data.is_playing,
     progress_ms: data.progress_ms,
+    context_uri: data.context?.uri ?? null,
     item: {
       id: data.item.id,
       type: data.item.type,
@@ -72,6 +73,7 @@ export async function GET(req: NextRequest) {
       artists: data.item.artists,
       album: data.item.album,
       duration_ms: data.item.duration_ms,
+      preview_url: data.item.preview_url ?? null,
     },
   });
 

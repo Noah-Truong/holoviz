@@ -2,6 +2,8 @@ export const SPOTIFY_SCOPES = [
   "user-read-currently-playing",
   "user-read-playback-state",
   "user-modify-playback-state",
+  "playlist-read-private",
+  "playlist-read-collaborative",
 ].join(" ");
 
 export const SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize";
@@ -34,12 +36,24 @@ export interface SpotifyTrack {
     images: SpotifyImage[];
   };
   duration_ms: number;
+  preview_url: string | null;
 }
 
 export interface NowPlayingResponse {
   is_playing: boolean;
   progress_ms: number;
   item: SpotifyTrack | null;
+  context_uri: string | null;
+}
+
+export interface SpotifyPlaylist {
+  id: string;
+  name: string;
+  description: string;
+  uri: string;
+  images: SpotifyImage[];
+  tracks: { total: number };
+  owner: { display_name: string };
 }
 
 export interface AudioSegment {

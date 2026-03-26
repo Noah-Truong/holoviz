@@ -1,12 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, useCallback, MutableRefObject } from "react";
-import {
-  AudioAnalysis,
-  AudioBeat,
-  AudioSegment,
-  NowPlayingResponse,
-  SpotifyTrack,
-} from "@/lib/spotify";
+import { NowPlayingResponse, SpotifyTrack } from "@/lib/spotify";
 
 export interface SpotifyState {
   isAuthenticated: boolean;
@@ -15,134 +9,41 @@ export interface SpotifyState {
   track: SpotifyTrack | null;
   progressMs: number;
   usingAnalysis: boolean;
+  contextUri: string | null;
 }
 
-// ── Audio analysis helpers ──────────────────────────────────────────────────
+// ── Synthetic FFT fallback ──────────────────────────────────────────────────
+// Used when a track has no preview_url (rare, some markets/tracks).
+// Generates a perceptually realistic frequency spectrum from elapsed time so
+// the sphere always has some reaction when Spotify is active.
 
-function findSegment(segments: AudioSegment[], timeSec: number): AudioSegment | null {
-  if (!segments.length) return null;
-  let lo = 0;
-  let hi = segments.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const seg = segments[mid];
-    if (timeSec < seg.start) hi = mid - 1;
-    else if (timeSec >= seg.start + seg.duration) lo = mid + 1;
-    else return seg;
-  }
-  return segments[Math.min(lo, segments.length - 1)];
-}
-
-function getBeatBoost(beats: AudioBeat[], timeSec: number): number {
-  if (!beats.length) return 1;
-  let lo = 0;
-  let hi = beats.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (beats[mid].start < timeSec) lo = mid + 1;
-    else hi = mid;
-  }
-  const beat = beats[Math.max(0, lo - 1)];
-  const dist = timeSec - beat.start;
-  if (dist >= 0 && dist < beat.duration * 0.18 && beat.confidence > 0.3) {
-    return 1 + beat.confidence * 0.7;
-  }
-  return 1;
-}
-
-/**
- * Builds a 256-bin FFT from Spotify's audio segment data.
- * Bins 0-159  → 12 chroma pitch classes
- * Bins 160-255 → 12 timbre coefficients
- */
-function buildFFTFromAnalysis(
-  segment: AudioSegment,
-  beatBoost: number,
-  prevFFT: Uint8Array
-): Uint8Array {
-  const loudness = Math.max(0, Math.min(1, (segment.loudness_max + 60) / 60));
-  const scale = Math.min(1, loudness * beatBoost);
-  const fft = new Uint8Array(256);
-
-  for (let i = 0; i < 160; i++) {
-    const t = (i / 160) * 12;
-    const i0 = Math.floor(t) % 12;
-    const i1 = (i0 + 1) % 12;
-    const frac = t - Math.floor(t);
-    const v = segment.pitches[i0] * (1 - frac) + segment.pitches[i1] * frac;
-    const env = 1 - (i / 160) * 0.35;
-    fft[i] = Math.round((v * scale * env * 245) * 0.7 + prevFFT[i] * 0.3);
-  }
-
-  for (let i = 160; i < 256; i++) {
-    const t = ((i - 160) / 96) * 12;
-    const i0 = Math.floor(t) % 12;
-    const i1 = (i0 + 1) % 12;
-    const frac = t - Math.floor(t);
-    const v = segment.timbre[i0] * (1 - frac) + segment.timbre[i1] * frac;
-    const norm =
-      i0 === 0
-        ? Math.max(0, Math.min(1, (v + 60) / 120))
-        : Math.max(0, Math.min(1, (v + 100) / 200));
-    fft[i] = Math.round((norm * scale * 210) * 0.7 + prevFFT[i] * 0.3);
-  }
-
-  return fft;
-}
-
-/**
- * Synthetic fallback FFT — used when Spotify's audio analysis API is
- * unavailable (it was deprecated in late 2024).
- *
- * Generates a perceptually realistic frequency spectrum using overlapping
- * band oscillators and a simulated ~120 BPM kick/snare pattern that
- * makes the sphere look music-reactive without real audio data.
- */
 function buildSyntheticFFT(
   progressMs: number,
   elapsedMs: number,
   prevFFT: Uint8Array
 ): Uint8Array {
   const fft = new Uint8Array(256);
-  const t = (progressMs + elapsedMs) / 1000; // wall-clock seconds into track
+  const t = (progressMs + elapsedMs) / 1000;
 
-  // ── Beat pattern: kick on every beat, snare/hat on off-beats (~120 BPM) ──
-  const bps = 2; // beats-per-second = 120 BPM
-  const beatPhase = (t * bps) % 1;
-  // Sharp attack + exponential decay — like an acoustic kick
+  const beatPhase = (t * 2) % 1; // ~120 BPM
   const kick = Math.exp(-beatPhase * 9) * (1 - Math.exp(-beatPhase * 80));
-
-  const hatPhase = (t * bps * 2) % 1;
+  const hatPhase = (t * 4) % 1;
   const hat = Math.exp(-hatPhase * 14) * 0.45;
 
-  // ── Frequency band envelopes ──────────────────────────────────────────────
   for (let i = 0; i < 256; i++) {
-    const n = i / 255; // 0..1
-
-    // Sub-bass & kick (0-50): beat-locked pulse
+    const n = i / 255;
     const bass = kick * Math.pow(Math.max(0, 1 - n * 5), 2) * 0.95;
-
-    // Low-mid / warmth (30-120): slow melodic oscillation
     const lmEnv = Math.exp(-Math.pow((n - 0.22) / 0.14, 2)) * 0.55;
     const lm = (0.5 + 0.5 * Math.sin(t * 5.1 + i * 0.19)) * lmEnv;
-
-    // Mid / presence (80-170): harmonic shimmer
     const mEnv = Math.exp(-Math.pow((n - 0.46) / 0.18, 2)) * 0.42;
     const m = (0.5 + 0.5 * Math.sin(t * 9.7 + i * 0.27 + 1.3)) * mEnv;
-
-    // Upper-mid / transients (150-220): hat-locked + sustain
     const hmEnv = Math.exp(-Math.pow((n - 0.69) / 0.11, 2)) * 0.32;
     const hm = hat * hmEnv + (0.3 + 0.3 * Math.sin(t * 14 + i * 0.41)) * hmEnv * 0.55;
-
-    // Air / highs (205-255): subtle shimmer
     const airEnv = Math.pow(Math.max(0, n - 0.78) / 0.22, 0.6) * 0.18;
     const air = Math.abs(Math.sin(t * 21 + i * 1.1)) * airEnv;
-
     const total = Math.min(1, bass + lm + m + hm + air);
-    // Smooth with previous frame so motion feels organic, not jittery
     fft[i] = Math.round(Math.round(total * 228) * 0.55 + prevFFT[i] * 0.45);
   }
-
   return fft;
 }
 
@@ -156,80 +57,92 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
     track: null,
     progressMs: 0,
     usingAnalysis: false,
+    contextUri: null,
   });
 
+  // Playback tracking
   const isSpotifyActiveRef = useRef(false);
-  const analysisRef = useRef<AudioAnalysis | null>(null);
-  const currentTrackIdRef = useRef<string | null>(null);
   const lastProgressRef = useRef(0);
   const lastPollTimeRef = useRef(0);
+  const currentTrackIdRef = useRef<string | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const animFrameRef = useRef(0);
 
-  const fetchAnalysis = useCallback(async (trackId: string) => {
-    try {
-      const res = await fetch(`/api/spotify/analysis/${trackId}`);
-      if (!res.ok) {
-        // Audio analysis API was deprecated by Spotify in late 2024.
-        // We fall back to the synthetic FFT generator automatically.
-        console.warn(
-          `[HoloViz] Spotify audio analysis unavailable (${res.status}) — using synthetic FFT.`
-        );
-        setState((p) => ({ ...p, usingAnalysis: false }));
-        return;
-      }
-      const data: AudioAnalysis = await res.json();
-      analysisRef.current = data;
-      currentTrackIdRef.current = trackId;
-      setState((p) => ({ ...p, usingAnalysis: true }));
-    } catch {
-      setState((p) => ({ ...p, usingAnalysis: false }));
+  // Preview audio chain
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fftArrayRef = useRef<any>(new Uint8Array(256));
+  const usingRealAudioRef = useRef(false);
+
+  // ── Preview audio helpers ─────────────────────────────────────────────────
+
+  const stopPreview = useCallback(() => {
+    if (audioElRef.current) {
+      audioElRef.current.pause();
+      audioElRef.current.src = "";
+      audioElRef.current = null;
     }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+    analyserRef.current = null;
+    usingRealAudioRef.current = false;
   }, []);
 
-  const pollNowPlaying = useCallback(async () => {
-    try {
-      const res = await fetch("/api/spotify/now-playing");
-      if (res.status === 401) {
-        setState((p) => ({ ...p, isAuthenticated: false }));
-        isSpotifyActiveRef.current = false;
-        return;
-      }
+  const startPreview = useCallback(
+    async (previewUrl: string) => {
+      stopPreview();
+      try {
+        const audioEl = new Audio();
+        // crossOrigin = anonymous is required for Web Audio API to read the
+        // decoded samples. Spotify's preview CDN supports this header.
+        audioEl.crossOrigin = "anonymous";
+        audioEl.loop = true;
+        audioEl.src = previewUrl;
 
-      const data: NowPlayingResponse = await res.json();
+        const ctx = new AudioContext();
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.82;
 
-      if (!data.is_playing || !data.item) {
-        setState((p) => ({ ...p, isPlaying: false, track: null }));
-        isSpotifyActiveRef.current = false;
-        return;
-      }
+        const source = ctx.createMediaElementSource(audioEl);
 
-      isSpotifyActiveRef.current = true;
-      lastProgressRef.current = data.progress_ms;
-      lastPollTimeRef.current = Date.now();
+        // Route: audio element → analyser → (silent gain) → destination
+        // The analyser node has access to all frequency data even though
+        // the user won't hear the preview (gain = 0 at the output).
+        const silentGain = ctx.createGain();
+        silentGain.gain.value = 0;
+        source.connect(analyser);
+        analyser.connect(silentGain);
+        silentGain.connect(ctx.destination);
 
-      setState((p) => ({
-        ...p,
-        isPlaying: true,
-        track: data.item,
-        progressMs: data.progress_ms,
-      }));
+        fftArrayRef.current = new Uint8Array(analyser.frequencyBinCount) as unknown as Uint8Array;
 
-      if (data.item.id !== currentTrackIdRef.current) {
-        analysisRef.current = null;
-        currentTrackIdRef.current = data.item.id;
+        // Resume AudioContext if suspended (autoplay policy)
+        const play = async () => {
+          if (ctx.state === "suspended") await ctx.resume();
+          await audioEl.play();
+        };
+        await play();
+
+        audioElRef.current = audioEl;
+        audioCtxRef.current = ctx;
+        analyserRef.current = analyser;
+        usingRealAudioRef.current = true;
+        setState((p) => ({ ...p, usingAnalysis: true }));
+      } catch (err) {
+        console.warn("[HoloViz] Preview audio setup failed:", err);
+        usingRealAudioRef.current = false;
         setState((p) => ({ ...p, usingAnalysis: false }));
-        fetchAnalysis(data.item.id); // fire-and-forget — sphere uses synthetic in the meantime
       }
-    } catch {
-      // keep last known state on transient network errors
-    }
-  }, [fetchAnalysis]);
+    },
+    [stopPreview]
+  );
 
-  // ── rAF loop: push frequency data every frame ──────────────────────────
-  // Runs independently of polling — always active so the sphere is never
-  // stuck waiting for a poll. Uses real analysis when available, synthetic
-  // (beat-simulated) FFT otherwise.
+  // ── rAF loop: push frequency data every frame ────────────────────────────
   useEffect(() => {
     let running = true;
 
@@ -237,22 +150,13 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
       if (!running) return;
 
       if (isSpotifyActiveRef.current) {
-        const elapsed = Date.now() - lastPollTimeRef.current;
-        const posSec = (lastProgressRef.current + elapsed) / 1000;
-
-        if (analysisRef.current) {
-          // Real per-segment audio data from Spotify
-          const segment = findSegment(analysisRef.current.segments, posSec);
-          if (segment) {
-            const boost = getBeatBoost(analysisRef.current.beats, posSec);
-            spotifyFreqRef.current = buildFFTFromAnalysis(
-              segment,
-              boost,
-              spotifyFreqRef.current
-            );
-          }
+        if (usingRealAudioRef.current && analyserRef.current) {
+          // Real FFT from the track's preview audio
+          analyserRef.current.getByteFrequencyData(fftArrayRef.current);
+          spotifyFreqRef.current = fftArrayRef.current;
         } else {
-          // Synthetic fallback: realistic spectrum + beat simulation
+          // Synthetic fallback for tracks without a preview URL
+          const elapsed = Date.now() - lastPollTimeRef.current;
           spotifyFreqRef.current = buildSyntheticFFT(
             lastProgressRef.current,
             elapsed,
@@ -271,7 +175,56 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
     };
   }, [spotifyFreqRef]);
 
-  // ── Initial auth probe + polling interval ──────────────────────────────
+  // ── Polling ───────────────────────────────────────────────────────────────
+
+  const pollNowPlaying = useCallback(async () => {
+    try {
+      const res = await fetch("/api/spotify/now-playing");
+      if (res.status === 401) {
+        setState((p) => ({ ...p, isAuthenticated: false }));
+        isSpotifyActiveRef.current = false;
+        stopPreview();
+        return;
+      }
+
+      const data: NowPlayingResponse = await res.json();
+
+      if (!data.is_playing || !data.item) {
+        setState((p) => ({ ...p, isPlaying: false, track: null, usingAnalysis: false }));
+        isSpotifyActiveRef.current = false;
+        stopPreview();
+        return;
+      }
+
+      isSpotifyActiveRef.current = true;
+      lastProgressRef.current = data.progress_ms;
+      lastPollTimeRef.current = Date.now();
+
+      setState((p) => ({
+        ...p,
+        isPlaying: true,
+        track: data.item,
+        progressMs: data.progress_ms,
+        contextUri: data.context_uri,
+      }));
+
+      // New track detected — (re)start preview audio
+      if (data.item.id !== currentTrackIdRef.current) {
+        currentTrackIdRef.current = data.item.id;
+        if (data.item.preview_url) {
+          // fire-and-forget; synthetic FFT covers the brief load gap
+          startPreview(data.item.preview_url);
+        } else {
+          stopPreview();
+          setState((p) => ({ ...p, usingAnalysis: false }));
+        }
+      }
+    } catch {
+      // keep last known state on transient network errors
+    }
+  }, [startPreview, stopPreview]);
+
+  // ── Initial auth + polling interval ──────────────────────────────────────
   useEffect(() => {
     const init = async () => {
       try {
@@ -282,32 +235,36 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
         }
         setState((p) => ({ ...p, isAuthenticated: true, isConnecting: false }));
         await pollNowPlaying();
-        pollTimerRef.current = setInterval(pollNowPlaying, 3000);
+        pollTimerRef.current = setInterval(pollNowPlaying, 4000);
       } catch {
         setState((p) => ({ ...p, isConnecting: false }));
       }
     };
 
     init();
+
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      stopPreview();
     };
-  }, [pollNowPlaying]);
+  }, [pollNowPlaying, stopPreview]);
+
+  // ── Track navigation ──────────────────────────────────────────────────────
 
   const skipTrack = useCallback(
     async (direction: "next" | "previous") => {
       try {
         await fetch(`/api/spotify/skip/${direction}`, { method: "POST" });
-        await new Promise((r) => setTimeout(r, 750));
-        analysisRef.current = null;
+        stopPreview();
         currentTrackIdRef.current = null;
         setState((p) => ({ ...p, usingAnalysis: false }));
+        await new Promise((r) => setTimeout(r, 800));
         await pollNowPlaying();
       } catch {
         // ignore
       }
     },
-    [pollNowPlaying]
+    [pollNowPlaying, stopPreview]
   );
 
   const nextTrack = useCallback(() => skipTrack("next"), [skipTrack]);
@@ -318,8 +275,14 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
   }, []);
 
   const disconnect = useCallback(() => {
+    stopPreview();
     window.location.href = "/api/auth/logout";
-  }, []);
+  }, [stopPreview]);
 
-  return { state, isSpotifyActiveRef, connect, disconnect, nextTrack, previousTrack };
+  const refreshNow = useCallback(async () => {
+    await new Promise((r) => setTimeout(r, 900));
+    await pollNowPlaying();
+  }, [pollNowPlaying]);
+
+  return { state, isSpotifyActiveRef, connect, disconnect, nextTrack, previousTrack, refreshNow };
 }

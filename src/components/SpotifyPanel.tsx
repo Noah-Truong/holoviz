@@ -1,6 +1,7 @@
 "use client";
 import Image from "next/image";
 import { SpotifyState } from "@/hooks/useSpotify";
+import PlaylistBrowser from "./PlaylistBrowser";
 
 interface SpotifyPanelProps {
   state: SpotifyState;
@@ -9,10 +10,8 @@ interface SpotifyPanelProps {
   onDisconnect: () => void;
   onNext: () => void;
   onPrevious: () => void;
+  onPlaylistSelect: () => void;
 }
-
-// Spotify deprecated GET /audio-analysis in late 2024. When it's unavailable
-// we fall back to a synthetic beat-simulated FFT — the sphere still reacts.
 
 export default function SpotifyPanel({
   state,
@@ -21,8 +20,9 @@ export default function SpotifyPanel({
   onDisconnect,
   onNext,
   onPrevious,
+  onPlaylistSelect,
 }: SpotifyPanelProps) {
-  const { isAuthenticated, isConnecting, isPlaying, track, usingAnalysis } = state;
+  const { isAuthenticated, isConnecting, isPlaying, track, usingAnalysis, contextUri } = state;
 
   if (isConnecting) {
     return (
@@ -131,6 +131,13 @@ export default function SpotifyPanel({
           <p className="text-xs text-gray-500">Nothing playing on Spotify</p>
         </div>
       )}
+
+      {/* Playlist browser */}
+      <PlaylistBrowser
+        isAuthenticated={isAuthenticated}
+        currentContextUri={contextUri}
+        onPlaylistSelect={onPlaylistSelect}
+      />
 
       {/* Track navigation controls */}
       <div className="flex items-center justify-center gap-3 pt-0.5">
