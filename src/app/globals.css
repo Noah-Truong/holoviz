@@ -1,26 +1,101 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --holo-color: #00d4ff;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #ffffff;
+  color: #111827;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Smooth color transitions on holo elements */
+[style*="--holo-color"] {
+  transition: color 0.4s ease, background-color 0.4s ease,
+    border-color 0.4s ease, box-shadow 0.4s ease;
+}
+
+/* Range input thumb styling */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--holo-color, #00d4ff);
+  cursor: pointer;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--holo-color, #00d4ff) 60%, transparent);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--holo-color, #00d4ff) 80%, transparent);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--holo-color, #00d4ff);
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--holo-color, #00d4ff) 60%, transparent);
+}
+
+/* Holographic scanline shimmer on panel */
+@keyframes scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(200%);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+.holo-scanline::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--holo-color) 6%, transparent) 50%,
+    transparent 100%
+  );
+  pointer-events: none;
+  animation: scanline 4s linear infinite;
+  border-radius: inherit;
+}
+
+/* Glow pulse for the play button */
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 8px color-mix(in srgb, var(--holo-color) 40%, transparent); }
+  50% { box-shadow: 0 0 20px color-mix(in srgb, var(--holo-color) 70%, transparent); }
+}
+
+.glow-pulse {
+  animation: glowPulse 2s ease-in-out infinite;
+}
+
+@keyframes barBounce {
+  0% { transform: scaleY(0.4); }
+  100% { transform: scaleY(1); }
 }
