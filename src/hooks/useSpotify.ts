@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, useCallback, MutableRefObject } from "react";
-import { NowPlayingResponse, SpotifyTrack } from "@/lib/spotify";
+import { AudioAnalysis, NowPlayingResponse, SpotifyTrack } from "@/lib/spotify";
 
 export interface SpotifyState {
   isAuthenticated: boolean;
@@ -13,9 +13,7 @@ export interface SpotifyState {
 }
 
 // ── Synthetic FFT fallback ──────────────────────────────────────────────────
-// Used when a track has no preview_url (rare, some markets/tracks).
-// Generates a perceptually realistic frequency spectrum from elapsed time so
-// the sphere always has some reaction when Spotify is active.
+// Used while audio analysis is loading or unavailable.
 
 function buildSyntheticFFT(
   progressMs: number,
@@ -25,7 +23,7 @@ function buildSyntheticFFT(
   const fft = new Uint8Array(256);
   const t = (progressMs + elapsedMs) / 1000;
 
-  const beatPhase = (t * 2) % 1; // ~120 BPM
+  const beatPhase = (t * 2) % 1;
   const kick = Math.exp(-beatPhase * 9) * (1 - Math.exp(-beatPhase * 80));
   const hatPhase = (t * 4) % 1;
   const hat = Math.exp(-hatPhase * 14) * 0.45;
@@ -44,6 +42,124 @@ function buildSyntheticFFT(
     const total = Math.min(1, bass + lm + m + hm + air);
     fft[i] = Math.round(Math.round(total * 228) * 0.55 + prevFFT[i] * 0.45);
   }
+  return fft;
+}
+
+// ── Analysis-driven FFT ────────────────────────────────────────────────────
+// Maps Spotify audio analysis data (beats, segments with chroma pitches,
+// timbre, and loudness) to a 256-bin frequency array synchronized with the
+// live playback position. This drives the visualizer with real musical data
+// for the actual track playing — not a preview clip.
+
+function buildAnalysisFFT(
+  progressMs: number,
+  elapsedMs: number,
+  analysis: AudioAnalysis,
+  prevFFT: Uint8Array
+): Uint8Array {
+  const fft = new Uint8Array(256);
+  const posSec = (progressMs + elapsedMs) / 1000;
+
+  const segs = analysis.segments;
+  if (!segs.length) return buildSyntheticFFT(progressMs, elapsedMs, prevFFT);
+
+  // Binary search for current segment
+  let lo = 0;
+  let hi = segs.length - 1;
+  let segIdx = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (segs[mid].start <= posSec) {
+      segIdx = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const seg = segs[segIdx];
+  const nextSeg = segs[segIdx + 1] ?? seg;
+
+  // Interpolation factor within segment (0–1)
+  const t = Math.min(1, Math.max(0, (posSec - seg.start) / Math.max(0.001, seg.duration)));
+
+  // Interpolated chroma pitches (12 values, 0–1 each)
+  const pitches = seg.pitches.map((p, i) => p + (nextSeg.pitches[i] - p) * t);
+
+  // Loudness: normalize dB to 0–1 (typical range -35 to 0 dB)
+  const loudnessDb = seg.loudness_max + (nextSeg.loudness_max - seg.loudness_max) * t;
+  const loudness = Math.min(1, Math.max(0, (loudnessDb + 35) / 35));
+
+  // Beat impulse: binary search for the most recent beat within 150 ms
+  let beatAmp = 0;
+  {
+    const beats = analysis.beats;
+    let blo = 0;
+    let bhi = beats.length - 1;
+    let bStart = beats.length;
+    while (blo <= bhi) {
+      const mid = (blo + bhi) >> 1;
+      if (beats[mid].start < posSec - 0.15) {
+        blo = mid + 1;
+      } else {
+        bStart = mid;
+        bhi = mid - 1;
+      }
+    }
+    for (let i = bStart; i < beats.length && beats[i].start <= posSec; i++) {
+      const dist = posSec - beats[i].start;
+      const impulse = beats[i].confidence * Math.exp(-dist * 25);
+      if (impulse > beatAmp) beatAmp = impulse;
+    }
+  }
+
+  for (let i = 0; i < 256; i++) {
+    let val = 0;
+
+    if (i < 8) {
+      // Sub-bass: beat-driven kick with loudness floor
+      val = (beatAmp * 0.95 + loudness * 0.3) * Math.pow(1 - i / 8, 1.5);
+    } else if (i < 40) {
+      // Bass: chroma C–D# (pitches 0–3), boosted on beats
+      const pn = (i - 8) / 32;
+      const rawIdx = pn * 4;
+      const pIdx = Math.floor(rawIdx);
+      const pFrac = rawIdx - pIdx;
+      const p = pitches[pIdx] * (1 - pFrac) + (pitches[Math.min(11, pIdx + 1)]) * pFrac;
+      val = p * loudness * 0.9 + beatAmp * Math.pow(1 - pn, 2) * 0.45;
+    } else if (i < 96) {
+      // Low-mid: chroma E–A (pitches 4–9)
+      const pn = (i - 40) / 56;
+      const rawIdx = pn * 6;
+      const pIdx = 4 + Math.floor(rawIdx);
+      const pFrac = rawIdx - Math.floor(rawIdx);
+      const p =
+        pitches[Math.min(11, pIdx)] * (1 - pFrac) +
+        pitches[Math.min(11, pIdx + 1)] * pFrac;
+      val = p * loudness * 0.8;
+    } else if (i < 160) {
+      // Mid: chroma A#–B (pitches 10–11) + harmonic reinforcement
+      const pn = (i - 96) / 64;
+      const p = pitches[10 + Math.floor(pn * 2 > 1 ? 1 : pn * 2)];
+      const harmonic = (pitches[(Math.floor(pn * 12)) % 12] + pitches[(Math.floor(pn * 12) + 7) % 12]) * 0.25;
+      val = (p + harmonic) * loudness * 0.65;
+    } else if (i < 220) {
+      // High-mid: harmonic presence shaped by loudness
+      const pn = (i - 160) / 60;
+      const harmonic = pitches[(Math.floor(pn * 6) + 5) % 12] * 0.5;
+      val = (loudness * 0.35 + harmonic * loudness * 0.3) * (1 - pn * 0.55);
+    } else {
+      // Highs: air roll-off
+      const pn = (i - 220) / 36;
+      val = loudness * 0.18 * Math.pow(1 - pn, 2);
+    }
+
+    // Asymmetric smoothing: fast attack, slow release
+    const raw = Math.min(1, Math.max(0, val));
+    const prev = prevFFT[i] / 255;
+    const smoothed = raw > prev ? raw * 0.65 + prev * 0.35 : raw * 0.2 + prev * 0.8;
+    fft[i] = Math.round(smoothed * 230);
+  }
+
   return fft;
 }
 
@@ -68,79 +184,29 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const animFrameRef = useRef(0);
 
-  // Preview audio chain
-  const audioElRef = useRef<HTMLAudioElement | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const fftArrayRef = useRef<any>(new Uint8Array(256));
-  const usingRealAudioRef = useRef(false);
+  // Audio analysis
+  const analysisRef = useRef<AudioAnalysis | null>(null);
+  const loadingAnalysisRef = useRef(false);
 
-  // ── Preview audio helpers ─────────────────────────────────────────────────
+  // ── Analysis fetch ────────────────────────────────────────────────────────
 
-  const stopPreview = useCallback(() => {
-    if (audioElRef.current) {
-      audioElRef.current.pause();
-      audioElRef.current.src = "";
-      audioElRef.current = null;
-    }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
-    }
-    analyserRef.current = null;
-    usingRealAudioRef.current = false;
-  }, []);
-
-  const startPreview = useCallback(
-    async (previewUrl: string) => {
-      stopPreview();
-      try {
-        const audioEl = new Audio();
-        // crossOrigin = anonymous is required for Web Audio API to read the
-        // decoded samples. Spotify's preview CDN supports this header.
-        audioEl.crossOrigin = "anonymous";
-        audioEl.loop = true;
-        audioEl.src = previewUrl;
-
-        const ctx = new AudioContext();
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.82;
-
-        const source = ctx.createMediaElementSource(audioEl);
-
-        // Route: audio element → analyser → (silent gain) → destination
-        // The analyser node has access to all frequency data even though
-        // the user won't hear the preview (gain = 0 at the output).
-        const silentGain = ctx.createGain();
-        silentGain.gain.value = 0;
-        source.connect(analyser);
-        analyser.connect(silentGain);
-        silentGain.connect(ctx.destination);
-
-        fftArrayRef.current = new Uint8Array(analyser.frequencyBinCount) as unknown as Uint8Array;
-
-        // Resume AudioContext if suspended (autoplay policy)
-        const play = async () => {
-          if (ctx.state === "suspended") await ctx.resume();
-          await audioEl.play();
-        };
-        await play();
-
-        audioElRef.current = audioEl;
-        audioCtxRef.current = ctx;
-        analyserRef.current = analyser;
-        usingRealAudioRef.current = true;
+  const fetchAnalysis = useCallback(async (trackId: string) => {
+    if (loadingAnalysisRef.current) return;
+    loadingAnalysisRef.current = true;
+    analysisRef.current = null;
+    setState((p) => ({ ...p, usingAnalysis: false }));
+    try {
+      const res = await fetch(`/api/spotify/analysis/${trackId}`);
+      if (res.ok) {
+        analysisRef.current = await res.json();
         setState((p) => ({ ...p, usingAnalysis: true }));
-      } catch (err) {
-        console.warn("[HoloViz] Preview audio setup failed:", err);
-        usingRealAudioRef.current = false;
-        setState((p) => ({ ...p, usingAnalysis: false }));
       }
-    },
-    [stopPreview]
-  );
+    } catch {
+      // keep synthetic fallback
+    } finally {
+      loadingAnalysisRef.current = false;
+    }
+  }, []);
 
   // ── rAF loop: push frequency data every frame ────────────────────────────
   useEffect(() => {
@@ -150,13 +216,16 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
       if (!running) return;
 
       if (isSpotifyActiveRef.current) {
-        if (usingRealAudioRef.current && analyserRef.current) {
-          // Real FFT from the track's preview audio
-          analyserRef.current.getByteFrequencyData(fftArrayRef.current);
-          spotifyFreqRef.current = fftArrayRef.current;
+        const elapsed = Date.now() - lastPollTimeRef.current;
+
+        if (analysisRef.current) {
+          spotifyFreqRef.current = buildAnalysisFFT(
+            lastProgressRef.current,
+            elapsed,
+            analysisRef.current,
+            spotifyFreqRef.current
+          );
         } else {
-          // Synthetic fallback for tracks without a preview URL
-          const elapsed = Date.now() - lastPollTimeRef.current;
           spotifyFreqRef.current = buildSyntheticFFT(
             lastProgressRef.current,
             elapsed,
@@ -183,7 +252,6 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
       if (res.status === 401) {
         setState((p) => ({ ...p, isAuthenticated: false }));
         isSpotifyActiveRef.current = false;
-        stopPreview();
         return;
       }
 
@@ -192,7 +260,8 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
       if (!data.is_playing || !data.item) {
         setState((p) => ({ ...p, isPlaying: false, track: null, usingAnalysis: false }));
         isSpotifyActiveRef.current = false;
-        stopPreview();
+        analysisRef.current = null;
+        currentTrackIdRef.current = null;
         return;
       }
 
@@ -208,21 +277,15 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
         contextUri: data.context_uri,
       }));
 
-      // New track detected — (re)start preview audio
+      // New track detected — fetch its audio analysis
       if (data.item.id !== currentTrackIdRef.current) {
         currentTrackIdRef.current = data.item.id;
-        if (data.item.preview_url) {
-          // fire-and-forget; synthetic FFT covers the brief load gap
-          startPreview(data.item.preview_url);
-        } else {
-          stopPreview();
-          setState((p) => ({ ...p, usingAnalysis: false }));
-        }
+        fetchAnalysis(data.item.id);
       }
     } catch {
       // keep last known state on transient network errors
     }
-  }, [startPreview, stopPreview]);
+  }, [fetchAnalysis]);
 
   // ── Initial auth + polling interval ──────────────────────────────────────
   useEffect(() => {
@@ -245,9 +308,8 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
 
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-      stopPreview();
     };
-  }, [pollNowPlaying, stopPreview]);
+  }, [pollNowPlaying]);
 
   // ── Track navigation ──────────────────────────────────────────────────────
 
@@ -255,7 +317,7 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
     async (direction: "next" | "previous") => {
       try {
         await fetch(`/api/spotify/skip/${direction}`, { method: "POST" });
-        stopPreview();
+        analysisRef.current = null;
         currentTrackIdRef.current = null;
         setState((p) => ({ ...p, usingAnalysis: false }));
         await new Promise((r) => setTimeout(r, 800));
@@ -264,7 +326,7 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
         // ignore
       }
     },
-    [pollNowPlaying, stopPreview]
+    [pollNowPlaying]
   );
 
   const nextTrack = useCallback(() => skipTrack("next"), [skipTrack]);
@@ -275,9 +337,9 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
   }, []);
 
   const disconnect = useCallback(() => {
-    stopPreview();
+    analysisRef.current = null;
     window.location.href = "/api/auth/logout";
-  }, [stopPreview]);
+  }, []);
 
   const refreshNow = useCallback(async () => {
     await new Promise((r) => setTimeout(r, 900));

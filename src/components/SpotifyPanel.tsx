@@ -58,12 +58,20 @@ export default function SpotifyPanel({
               Live
             </span>
           )}
+          {isActive && usingAnalysis && (
+            <span
+              title="Visualizer is driven by Spotify audio analysis for the current track"
+              className="rounded-full bg-blue-50 border border-blue-200 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 uppercase tracking-wider cursor-help"
+            >
+              Analysis
+            </span>
+          )}
           {isActive && !usingAnalysis && (
             <span
-              title="Spotify audio analysis API is unavailable — using beat simulation"
+              title="Loading audio analysis for this track…"
               className="rounded-full bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 uppercase tracking-wider cursor-help"
             >
-              Simulated
+              Loading…
             </span>
           )}
         </div>
