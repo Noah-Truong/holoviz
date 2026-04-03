@@ -3,21 +3,14 @@ import { MutableRefObject, Suspense } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Stars } from "@react-three/drei";
 import HolographicSphere from "./HolographicSphere";
-import { AudioFeatures } from "@/lib/spotify";
 
 interface SceneProps {
   frequencyDataRef: MutableRefObject<Uint8Array>;
   color: string;
   isPlaying: boolean;
-  audioFeatures?: AudioFeatures | null;
 }
 
-export default function Scene({
-  frequencyDataRef,
-  color,
-  isPlaying,
-  audioFeatures,
-}: SceneProps) {
+export default function Scene({ frequencyDataRef, color, isPlaying }: SceneProps) {
   return (
     <div className="w-full h-full" style={{ background: "transparent" }}>
       <Canvas
@@ -40,7 +33,6 @@ export default function Scene({
             frequencyDataRef={frequencyDataRef}
             color={color}
             isPlaying={isPlaying}
-            audioFeatures={audioFeatures}
           />
         </Suspense>
         <OrbitControls
