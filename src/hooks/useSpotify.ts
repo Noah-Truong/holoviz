@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, useCallback, MutableRefObject } from "react";
-import { AudioAnalysis, NowPlayingResponse, SpotifyTrack } from "@/lib/spotify";
+import { AudioAnalysis, AudioFeatures, NowPlayingResponse, SpotifyTrack } from "@/lib/spotify";
 
 export interface SpotifyState {
   isAuthenticated: boolean;
@@ -10,6 +10,7 @@ export interface SpotifyState {
   progressMs: number;
   usingAnalysis: boolean;
   contextUri: string | null;
+  features: AudioFeatures | null;
 }
 
 // ── Synthetic FFT fallback ──────────────────────────────────────────────────
@@ -89,6 +90,13 @@ function buildAnalysisFFT(
   const loudnessDb = seg.loudness_max + (nextSeg.loudness_max - seg.loudness_max) * t;
   const loudness = Math.min(1, Math.max(0, (loudnessDb + 35) / 35));
 
+  // Brightness (timbre[1]): spectral centroid proxy, roughly -100 to +200 range.
+  // High value = more treble content / harmonic richness.
+  const rawBrightness = seg.timbre.length > 1
+    ? seg.timbre[1] + (nextSeg.timbre[1] - seg.timbre[1]) * t
+    : 0;
+  const brightness = Math.min(1, Math.max(0, (rawBrightness + 100) / 300));
+
   // Beat impulse: binary search for the most recent beat within 150 ms
   let beatAmp = 0;
   {
@@ -143,14 +151,14 @@ function buildAnalysisFFT(
       const harmonic = (pitches[(Math.floor(pn * 12)) % 12] + pitches[(Math.floor(pn * 12) + 7) % 12]) * 0.25;
       val = (p + harmonic) * loudness * 0.65;
     } else if (i < 220) {
-      // High-mid: harmonic presence shaped by loudness
+      // High-mid: harmonic presence + brightness (timbre[1]) shaped by loudness
       const pn = (i - 160) / 60;
       const harmonic = pitches[(Math.floor(pn * 6) + 5) % 12] * 0.5;
-      val = (loudness * 0.35 + harmonic * loudness * 0.3) * (1 - pn * 0.55);
+      val = (loudness * 0.32 + harmonic * loudness * 0.28 + brightness * loudness * 0.22) * (1 - pn * 0.5);
     } else {
-      // Highs: air roll-off
+      // Highs: air roll-off driven by brightness
       const pn = (i - 220) / 36;
-      val = loudness * 0.18 * Math.pow(1 - pn, 2);
+      val = (loudness * 0.12 + brightness * 0.28) * Math.pow(1 - pn, 1.6);
     }
 
     // Asymmetric smoothing: fast attack, slow release
@@ -174,6 +182,7 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
     progressMs: 0,
     usingAnalysis: false,
     contextUri: null,
+    features: null,
   });
 
   // Playback tracking
@@ -188,18 +197,25 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
   const analysisRef = useRef<AudioAnalysis | null>(null);
   const loadingAnalysisRef = useRef(false);
 
-  // ── Analysis fetch ────────────────────────────────────────────────────────
+  // ── Analysis + Features fetch ─────────────────────────────────────────────
 
   const fetchAnalysis = useCallback(async (trackId: string) => {
     if (loadingAnalysisRef.current) return;
     loadingAnalysisRef.current = true;
     analysisRef.current = null;
-    setState((p) => ({ ...p, usingAnalysis: false }));
+    setState((p) => ({ ...p, usingAnalysis: false, features: null }));
     try {
-      const res = await fetch(`/api/spotify/analysis/${trackId}`);
-      if (res.ok) {
-        analysisRef.current = await res.json();
+      const [analysisRes, featuresRes] = await Promise.all([
+        fetch(`/api/spotify/analysis/${trackId}`),
+        fetch(`/api/spotify/features/${trackId}`),
+      ]);
+      if (analysisRes.ok) {
+        analysisRef.current = await analysisRes.json();
         setState((p) => ({ ...p, usingAnalysis: true }));
+      }
+      if (featuresRes.ok) {
+        const features = await featuresRes.json();
+        setState((p) => ({ ...p, features }));
       }
     } catch {
       // keep synthetic fallback
@@ -258,7 +274,7 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
       const data: NowPlayingResponse = await res.json();
 
       if (!data.is_playing || !data.item) {
-        setState((p) => ({ ...p, isPlaying: false, track: null, usingAnalysis: false }));
+        setState((p) => ({ ...p, isPlaying: false, track: null, usingAnalysis: false, features: null }));
         isSpotifyActiveRef.current = false;
         analysisRef.current = null;
         currentTrackIdRef.current = null;
@@ -319,7 +335,7 @@ export function useSpotify(spotifyFreqRef: MutableRefObject<Uint8Array>) {
         await fetch(`/api/spotify/skip/${direction}`, { method: "POST" });
         analysisRef.current = null;
         currentTrackIdRef.current = null;
-        setState((p) => ({ ...p, usingAnalysis: false }));
+        setState((p) => ({ ...p, usingAnalysis: false, features: null }));
         await new Promise((r) => setTimeout(r, 800));
         await pollNowPlaying();
       } catch {

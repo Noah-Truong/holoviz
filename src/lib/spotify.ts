@@ -77,6 +77,17 @@ export interface AudioAnalysis {
   segments: AudioSegment[];
 }
 
+export interface AudioFeatures {
+  energy: number;       // 0–1, intensity and activity
+  danceability: number; // 0–1, rhythm regularity and beat strength
+  valence: number;      // 0–1, musical positiveness (sad→happy)
+  tempo: number;        // BPM
+  loudness: number;     // dB, typically -60 to 0
+  acousticness: number; // 0–1, acoustic vs electronic
+  key: number;          // 0=C, 1=C#, ..., 11=B
+  mode: number;         // 1=major, 0=minor
+}
+
 export async function refreshAccessToken(
   refreshToken: string
 ): Promise<SpotifyTokens> {

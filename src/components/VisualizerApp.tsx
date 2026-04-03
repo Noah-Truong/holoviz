@@ -3,6 +3,8 @@ import dynamic from "next/dynamic";
 import { useState, useRef, useEffect } from "react";
 import { useAudioAnalyzer } from "@/hooks/useAudioAnalyzer";
 import { useSpotify } from "@/hooks/useSpotify";
+import { useDeezerPreview } from "@/hooks/useDeezerPreview";
+import { useSystemAudio } from "@/hooks/useSystemAudio";
 import AudioUploader from "./AudioUploader";
 import ColorPicker from "./ColorPicker";
 import PlayerControls from "./PlayerControls";
@@ -25,36 +27,105 @@ const Scene = dynamic(() => import("./Scene"), {
 
 const DEFAULT_COLOR = "#00d4ff";
 
+// Audio source modes
+type AudioSource = "spotify" | "deezer" | "system" | "microphone" | "file";
+
 export default function VisualizerApp() {
   const [color, setColor] = useState(DEFAULT_COLOR);
+  const [audioSource, setAudioSource] = useState<AudioSource>("spotify");
 
   // File-based audio analyzer
   const { audioState, frequencyDataRef: fileFreqRef, loadFile, play, pause, setVolume } =
     useAudioAnalyzer();
 
-  // Spotify-driven frequency data
+  // Spotify-driven frequency data (analysis-based synthetic FFT)
   const spotifyFreqRef = useRef<Uint8Array>(new Uint8Array(256));
   const { state: spotifyState, isSpotifyActiveRef, connect, disconnect, nextTrack, previousTrack, refreshNow } =
     useSpotify(spotifyFreqRef);
 
+  // Deezer preview — real FFT from 30s preview clip
+  const deezerFreqRef = useRef<Uint8Array>(new Uint8Array(256));
+  const { state: deezerState, isActiveRef: isDeezerActiveRef } = useDeezerPreview(
+    deezerFreqRef,
+    spotifyState.track,
+    audioSource === "deezer" && spotifyState.isAuthenticated && spotifyState.isPlaying
+  );
+
+  // System audio / microphone — real FFT from device audio
+  const systemFreqRef = useRef<Uint8Array>(new Uint8Array(256));
+  const { state: systemState, isActiveRef: isSystemActiveRef, startDisplay, startMicrophone, stop: stopSystem } =
+    useSystemAudio(systemFreqRef);
+
   // The single ref passed to the 3D scene — updated each frame from whichever
-  // source is currently active (Spotify takes priority over file upload).
+  // source is currently active.
   const activeFreqRef = useRef<Uint8Array>(new Uint8Array(256));
 
   useEffect(() => {
     let frame: number;
     const merge = () => {
-      activeFreqRef.current = isSpotifyActiveRef.current
-        ? spotifyFreqRef.current
-        : fileFreqRef.current;
+      if (audioSource === "system" || audioSource === "microphone") {
+        if (isSystemActiveRef.current) {
+          activeFreqRef.current = systemFreqRef.current;
+        }
+      } else if (audioSource === "deezer") {
+        if (isDeezerActiveRef.current) {
+          activeFreqRef.current = deezerFreqRef.current;
+        } else if (isSpotifyActiveRef.current) {
+          activeFreqRef.current = spotifyFreqRef.current;
+        }
+      } else if (audioSource === "spotify") {
+        activeFreqRef.current = isSpotifyActiveRef.current
+          ? spotifyFreqRef.current
+          : fileFreqRef.current;
+      } else {
+        // file mode
+        activeFreqRef.current = fileFreqRef.current;
+      }
       frame = requestAnimationFrame(merge);
     };
     frame = requestAnimationFrame(merge);
     return () => cancelAnimationFrame(frame);
-  }, [isSpotifyActiveRef, spotifyFreqRef, fileFreqRef]);
+  }, [audioSource, isSpotifyActiveRef, isDeezerActiveRef, isSystemActiveRef,
+      spotifyFreqRef, deezerFreqRef, systemFreqRef, fileFreqRef]);
+
+  // Auto-switch source mode for system audio
+  const handleStartDisplay = async () => {
+    setAudioSource("system");
+    await startDisplay();
+  };
+  const handleStartMicrophone = async () => {
+    setAudioSource("microphone");
+    await startMicrophone();
+  };
+  const handleStopSystem = () => {
+    stopSystem();
+    setAudioSource("spotify");
+  };
 
   const isSpotifyPlaying = spotifyState.isAuthenticated && spotifyState.isPlaying;
-  const displayIsPlaying = isSpotifyPlaying || audioState.isPlaying;
+  const displayIsPlaying = isSpotifyPlaying || audioState.isPlaying || systemState.isCapturing;
+
+  // Determine what to show in the source badge
+  const activeBadge = (() => {
+    if (systemState.isCapturing) {
+      return systemState.mode === "microphone" ? "Microphone" : "System Audio";
+    }
+    if (isSpotifyPlaying) {
+      if (audioSource === "deezer" && deezerState.isPlaying) return "Deezer Preview";
+      return "Spotify Live";
+    }
+    if (audioState.isPlaying) return "File Playing";
+    return null;
+  })();
+
+  // Quality label for the active source
+  const qualityLabel = (() => {
+    if (systemState.isCapturing) return "Real FFT";
+    if (audioSource === "deezer" && deezerState.isPlaying) return "Real FFT";
+    if (isSpotifyPlaying && spotifyState.usingAnalysis) return "Analysis";
+    if (audioState.isPlaying) return "Real FFT";
+    return null;
+  })();
 
   const handlePlayPause = () => {
     if (audioState.isPlaying) pause();
@@ -90,8 +161,7 @@ export default function VisualizerApp() {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {/* Active source badge */}
-          {(isSpotifyPlaying || audioState.isPlaying) && (
+          {activeBadge && (
             <span
               className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest"
               style={{
@@ -100,7 +170,10 @@ export default function VisualizerApp() {
                 border: `1px solid color-mix(in srgb, ${color} 35%, transparent)`,
               }}
             >
-              {isSpotifyPlaying ? "Spotify Live" : "File Playing"}
+              {activeBadge}
+              {qualityLabel && (
+                <span className="ml-1 opacity-60">· {qualityLabel}</span>
+              )}
             </span>
           )}
           <span className="text-xs text-gray-400 tracking-wide">
@@ -120,6 +193,7 @@ export default function VisualizerApp() {
             frequencyDataRef={activeFreqRef}
             color={color}
             isPlaying={displayIsPlaying}
+            audioFeatures={spotifyState.features}
           />
         </div>
 
@@ -142,6 +216,24 @@ export default function VisualizerApp() {
                 Connect Spotify or upload a local track
               </p>
             </div>
+
+            <Divider color={color} />
+
+            {/* Audio Source Selector */}
+            <AudioSourceSelector
+              color={color}
+              current={audioSource}
+              spotifyConnected={spotifyState.isAuthenticated}
+              spotifyPlaying={isSpotifyPlaying}
+              systemCapturing={systemState.isCapturing}
+              systemMode={systemState.mode}
+              deezerState={deezerState}
+              systemError={systemState.error}
+              onSelect={setAudioSource}
+              onStartDisplay={handleStartDisplay}
+              onStartMicrophone={handleStartMicrophone}
+              onStopSystem={handleStopSystem}
+            />
 
             <Divider color={color} />
 
@@ -189,6 +281,142 @@ export default function VisualizerApp() {
           </div>
         </div>
       </main>
+    </div>
+  );
+}
+
+// ── Audio Source Selector ────────────────────────────────────────────────────
+
+interface AudioSourceSelectorProps {
+  color: string;
+  current: AudioSource;
+  spotifyConnected: boolean;
+  spotifyPlaying: boolean;
+  systemCapturing: boolean;
+  systemMode: "display" | "microphone" | null;
+  deezerState: { isLoading: boolean; isPlaying: boolean; matchTitle: string | null; error: string | null };
+  systemError: string | null;
+  onSelect: (s: AudioSource) => void;
+  onStartDisplay: () => void;
+  onStartMicrophone: () => void;
+  onStopSystem: () => void;
+}
+
+function AudioSourceSelector({
+  color,
+  current,
+  spotifyConnected,
+  spotifyPlaying,
+  systemCapturing,
+  systemMode,
+  deezerState,
+  systemError,
+  onSelect,
+  onStartDisplay,
+  onStartMicrophone,
+  onStopSystem,
+}: AudioSourceSelectorProps) {
+  const sources: { id: AudioSource; label: string; subtitle: string; quality: string }[] = [
+    {
+      id: "spotify",
+      label: "Spotify Analysis",
+      subtitle: "Beat & pitch data",
+      quality: "Synthetic FFT",
+    },
+    {
+      id: "deezer",
+      label: "Deezer Preview",
+      subtitle: "30s real audio",
+      quality: "Real FFT",
+    },
+    {
+      id: "system",
+      label: "System Audio",
+      subtitle: "Chrome only",
+      quality: "Real FFT",
+    },
+    {
+      id: "microphone",
+      label: "Microphone",
+      subtitle: "Live input",
+      quality: "Real FFT",
+    },
+  ];
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">
+        Audio Source
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        {sources.map((s) => {
+          const isActive = current === s.id;
+          const isRealFFT = s.quality === "Real FFT";
+          return (
+            <button
+              key={s.id}
+              onClick={() => {
+                if (s.id === "system") {
+                  if (systemCapturing && systemMode === "display") { onStopSystem(); return; }
+                  onStartDisplay();
+                } else if (s.id === "microphone") {
+                  if (systemCapturing && systemMode === "microphone") { onStopSystem(); return; }
+                  onStartMicrophone();
+                } else {
+                  onSelect(s.id);
+                }
+              }}
+              className="relative flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2.5 text-left transition-all"
+              style={{
+                borderColor: isActive
+                  ? `color-mix(in srgb, ${color} 60%, transparent)`
+                  : `color-mix(in srgb, ${color} 18%, #e5e7eb)`,
+                background: isActive
+                  ? `color-mix(in srgb, ${color} 10%, white)`
+                  : "transparent",
+              }}
+            >
+              <span className="text-[11px] font-semibold text-gray-800">{s.label}</span>
+              <span className="text-[10px] text-gray-400">{s.subtitle}</span>
+              <span
+                className="mt-0.5 rounded-full px-1.5 py-px text-[9px] font-bold uppercase tracking-wider"
+                style={{
+                  background: isRealFFT
+                    ? `color-mix(in srgb, ${color} 18%, transparent)`
+                    : "rgba(0,0,0,0.05)",
+                  color: isRealFFT ? color : "#9ca3af",
+                }}
+              >
+                {s.quality}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Deezer status */}
+      {current === "deezer" && spotifyPlaying && (
+        <div className="text-[11px] text-gray-500 leading-relaxed">
+          {deezerState.isLoading && "Searching Deezer..."}
+          {deezerState.isPlaying && deezerState.matchTitle && (
+            <span style={{ color }}>Playing: {deezerState.matchTitle}</span>
+          )}
+          {deezerState.error && (
+            <span className="text-red-400">{deezerState.error}</span>
+          )}
+          {!spotifyConnected && "Connect Spotify first"}
+        </div>
+      )}
+
+      {/* System audio status / errors */}
+      {(current === "system" || current === "microphone") && systemError && (
+        <p className="text-[11px] text-red-400 leading-relaxed">{systemError}</p>
+      )}
+      {systemCapturing && (
+        <p className="text-[11px] leading-relaxed" style={{ color }}>
+          {systemMode === "microphone" ? "Mic active" : "System audio active"} &mdash; real-time FFT
+        </p>
+      )}
     </div>
   );
 }

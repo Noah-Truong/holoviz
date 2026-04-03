@@ -12,29 +12,43 @@ export class AudioAnalyzer {
   private audioBuffer: AudioBuffer | null = null;
   public duration: number = 0;
 
-  async loadFile(file: File): Promise<void> {
+  private async initContext(): Promise<void> {
     this.stop();
     if (this.audioContext) {
       await this.audioContext.close();
     }
-
     this.audioContext = new AudioContext();
     this.analyser = this.audioContext.createAnalyser();
     this.analyser.fftSize = 512;
     this.analyser.smoothingTimeConstant = 0.82;
     this.bufferLength = this.analyser.frequencyBinCount;
     this.dataArray = new Uint8Array(this.bufferLength);
-
     this.gainNode = this.audioContext.createGain();
     this.gainNode.gain.value = 1;
-
     this.analyser.connect(this.gainNode);
     this.gainNode.connect(this.audioContext.destination);
+  }
 
+  async loadFile(file: File): Promise<void> {
+    await this.initContext();
     const arrayBuffer = await file.arrayBuffer();
-    this.audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
+    this.audioBuffer = await this.audioContext!.decodeAudioData(arrayBuffer);
     this.duration = this.audioBuffer.duration;
     this.pauseOffset = 0;
+  }
+
+  async loadArrayBuffer(arrayBuffer: ArrayBuffer): Promise<void> {
+    await this.initContext();
+    this.audioBuffer = await this.audioContext!.decodeAudioData(arrayBuffer);
+    this.duration = this.audioBuffer.duration;
+    this.pauseOffset = 0;
+  }
+
+  async loadUrl(url: string): Promise<void> {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch audio: ${res.status}`);
+    const buffer = await res.arrayBuffer();
+    await this.loadArrayBuffer(buffer);
   }
 
   play(): void {

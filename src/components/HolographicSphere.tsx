@@ -2,11 +2,13 @@
 import { useRef, useMemo, MutableRefObject } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+import { AudioFeatures } from "@/lib/spotify";
 
 interface HolographicSphereProps {
   frequencyDataRef: MutableRefObject<Uint8Array>;
   color: string;
   isPlaying: boolean;
+  audioFeatures?: AudioFeatures | null;
 }
 
 const NODE_COUNT = 280;
@@ -28,6 +30,7 @@ export default function HolographicSphere({
   frequencyDataRef,
   color,
   isPlaying,
+  audioFeatures,
 }: HolographicSphereProps) {
   const groupRef = useRef<THREE.Group>(null);
   const stickMeshRef = useRef<THREE.InstancedMesh>(null);
@@ -111,29 +114,38 @@ export default function HolographicSphere({
     if (!groupRef.current || !stickMeshRef.current || !ballMeshRef.current) return;
 
     const t = clock.getElapsedTime();
-    groupRef.current.rotation.y = t * 0.12;
+
+    // Audio features modulators (per-track, slow-changing)
+    const energy = audioFeatures?.energy ?? 0.6;           // 0–1, overall intensity
+    const valence = audioFeatures?.valence ?? 0.5;         // 0–1, mood (sad→happy)
+    const tempo = audioFeatures?.tempo ?? 120;             // BPM
+    const tempoMult = Math.max(0.5, Math.min(2.5, tempo / 120));
+
+    // Rotation speed scales with tempo
+    groupRef.current.rotation.y = t * 0.12 * tempoMult;
 
     const fftData = frequencyDataRef.current;
     const fftLen = fftData.length;
     const avgAmplitude =
       fftLen > 0 ? fftData.reduce((a, b) => a + b, 0) / fftLen / 255 : 0;
 
-    const breathe = 1 + Math.sin(t * 0.8) * 0.02 + avgAmplitude * 0.08;
+    // Energy scales the breathing amplitude
+    const breathe = 1 + Math.sin(t * 0.8) * 0.02 + avgAmplitude * (0.06 + energy * 0.1);
     const r = BASE_RADIUS * breathe;
 
-    // Glow pulse
+    // Glow scales with energy — high-energy tracks pulse more aggressively
     if (glowSphereRef.current) {
-      glowSphereRef.current.scale.setScalar(1 + avgAmplitude * 0.28);
+      glowSphereRef.current.scale.setScalar(1 + avgAmplitude * (0.2 + energy * 0.22));
       (glowSphereRef.current.material as THREE.MeshBasicMaterial).opacity =
-        0.03 + avgAmplitude * 0.14;
+        0.03 + avgAmplitude * 0.14 + valence * 0.03;
     }
 
-    // Orbital rings
+    // Orbital rings — speed driven by tempo, scale by energy
     ringRefs.current.forEach((ring, i) => {
       if (!ring) return;
-      ring.rotation.z = t * (0.2 + i * 0.1);
-      ring.rotation.x = t * (0.15 - i * 0.05);
-      ring.scale.setScalar(1 + Math.sin(t * 2 + i) * 0.04 + avgAmplitude * 0.12);
+      ring.rotation.z = t * (0.2 + i * 0.1) * tempoMult;
+      ring.rotation.x = t * (0.15 - i * 0.05) * tempoMult;
+      ring.scale.setScalar(1 + Math.sin(t * 2 + i) * 0.04 + avgAmplitude * (0.1 + energy * 0.08));
       (ring.material as THREE.MeshBasicMaterial).opacity = 0.1 + avgAmplitude * 0.28;
     });
 
@@ -141,14 +153,22 @@ export default function HolographicSphere({
     (stickMeshRef.current.material as THREE.MeshBasicMaterial).color.set(color);
     (ballMeshRef.current.material as THREE.MeshBasicMaterial).color.set(color);
 
+    // Spike amplitude multiplier: high-energy tracks = taller spikes
+    const spikeScale = 0.6 + energy * 0.36;
+
     for (let i = 0; i < NODE_COUNT; i++) {
       const pt = spherePoints[i];
-      const freqIndex = Math.floor((i / NODE_COUNT) * fftLen);
-      const amp = fftLen > 0 ? fftData[freqIndex] / 255 : 0;
+
+      // Logarithmic bin mapping: compresses bass (where energy concentrates),
+      // spreads mids/highs — matches how human hearing perceives frequency.
+      const logIndex = fftLen > 0
+        ? Math.min(fftLen - 1, Math.floor(Math.pow(i / NODE_COUNT, 1.7) * fftLen))
+        : 0;
+      const amp = fftLen > 0 ? fftData[logIndex] / 255 : 0;
 
       const idle = 0.04 + Math.sin(t * 1.5 + i * 0.3) * 0.015;
       const spikeLen = isPlaying
-        ? idle + amp * 0.72
+        ? idle + amp * spikeScale
         : idle + Math.sin(t * 0.5 + i * 0.7) * 0.018;
 
       // ── Stick: base at sphere surface, tip pointing outward ───────────────
